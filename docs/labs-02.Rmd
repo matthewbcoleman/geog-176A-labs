@@ -1,0 +1,236 @@
+---
+title: "lab-02"
+author: '[Matthew Coleman](https://matthewbcoleman.github.io/)'
+subtitle: 'COVID-19 Pandemic'
+output: 
+  html_document:
+    #theme: journal
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(dplyr.summarise.inform=F) 
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(knitr)
+library(readxl)
+library(zoo)
+library(kableExtra)
+library(ggthemes)
+library(RColorBrewer)
+```
+
+```{r, message=F}
+covid <- read_csv('https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv')
+```
+
+# Question 1
+
+```{r}
+
+
+
+##############============================== QUESTION 1 ==============================##############
+
+#California Table 
+
+ca_covid <- covid %>% filter(state == 'California') %>% group_by(county) %>% arrange(date, .by_group = TRUE ) %>% mutate(daily_cases =  (cases - lag(cases, default=first(cases)))) %>% ungroup()
+```
+
+```{r}
+ca_top_case <- ca_covid %>% group_by(county) %>% summarise(cases = max(cases)) %>% ungroup() %>% slice_max(cases,n=5)
+
+ca_top_daily <- ca_covid %>% filter(date == max(date)) %>% slice_max(daily_cases, n=5) %>% select(date, county, daily_cases)
+
+kable(ca_top_case, caption = 'Top 5 Counties by Case Count', col.names = c('County', 'Total Cases'), align = 'l', format.args = list(big.mark = ',')) %>% kable_styling()
+
+kable(ca_top_daily, caption = 'Top 5 Daily Case Counts', col.names = c('Date', 'County', 'Daily Cases'), align = 'l', format.args = list(big.mark = ',')) %>% kable_styling()
+```
+
+```{r}
+population_2019 <- read_excel('../data/PopulationEstimates.xls', skip = 2) %>% select(State, Area_Name, fips = FIPStxt, pop_2019 = POP_ESTIMATE_2019)
+
+
+ca_pop <- population_2019 %>% filter(State=='CA', Area_Name!='California')
+
+ca_covid_pop <-  left_join(ca_covid, ca_pop, by = 'fips') %>%  group_by(county) %>% 
+  mutate(cases_per_capita = cases/pop_2019, new_cases_per_capita = daily_cases/pop_2019)
+
+```
+
+```{r}
+top_cases_per <- ca_covid_pop %>% group_by(county) %>% summarise(cases_per_capita = max(cases_per_capita)) %>% slice_max(cases_per_capita, n= 5)
+```
+
+```{r}
+#for some reason slice max refused to work with the new_cases_per_capita column after working with all the other columns so I had to do the brute force way 
+top_new_cases_arrange <- ca_covid_pop %>% filter(date ==max(date)) %>% arrange(-new_cases_per_capita)
+top_new_cases_per <- top_new_cases_arrange[1:5,] %>% select(date, county, new_cases_per_capita)
+
+```
+
+```{r}
+kable(top_cases_per, caption = 'Top 5 Counties with Cummulative Cases per Capita', col.names = c('County', 'Cummulative Cases per Capita'), align = 'l', format.args = list(big.mark = ',')) %>% kable_styling()
+
+kable(top_new_cases_per, caption = 'Top 5 Daily Cummulative Cases per Capita', col.names = c('Date', 'County', 'Daily Cases per Capita'), align = 'l', format.args = list(big.mark = ',')) %>% kable_styling()
+```
+
+
+```{r}
+ca_covid_14 <- ca_covid_pop %>% filter(date >= (max(date)-13))
+ca_last_14_covid <- ca_covid_14 %>% group_by(county) %>% summarise(last_14_cases = sum(daily_cases), pop_2019 = mean(pop_2019)) %>%
+  na.omit() %>% ungroup() %>% mutate(last_14_per_hundredk = (last_14_cases/pop_2019)*100000)
+
+watchlist <- ca_last_14_covid %>% filter(last_14_per_hundredk >=100)
+nonwatchlist <- ca_last_14_covid %>% filter(last_14_per_hundredk < 100)
+
+watchlist_county <- watchlist %>% pull(county)
+nonwatchlist_county <- nonwatchlist %>% pull(county)
+```
+
+```{r}
+df_cummulative_cases <- ca_covid %>% filter(date == max(date)) 
+
+cummulative_cases <- sum(df_cummulative_cases$cases)
+new_cummulative_cases <- sum(df_cummulative_cases$daily_cases)
+```
+
+### Analysis and Results 
+
+In the state, there have been a total of  `r format(cummulative_cases, scientific = F, big.mark = ',')` cases and `r format( new_cummulative_cases, scientific=F, big.mark = ',')` new cases on `r format(max(ca_covid$date), '%d %B %Y')`. The following counties are no longer on the California Watch list:  **`r paste0(nonwatchlist_county, collapse = ', ')`**
+
+# Question 2
+
+```{r}
+
+
+
+##############============================== QUESTION 2 ==============================##############
+
+states_four <- covid %>% filter(state %in% c('New York', 'California', 'Louisiana', 'Florida'))
+```
+
+```{r}
+states_totals <- states_four %>% group_by(state, date) %>% summarise(total_cases = sum(cases)) %>% mutate(daily_cases =  (total_cases - lag(total_cases, default=first(total_cases)))) %>% group_by(state) %>% mutate(rolling_mean = rollmean(daily_cases, 7, na.pad=TRUE, align = 'right')) %>% filter(daily_cases > 0)
+```
+
+<center>
+```{r, warning = FALSE}
+long_state_totals <- states_totals %>% pivot_longer(cols = c('daily_cases', 'rolling_mean'), names_to = 'type')
+
+type.labs <- c('Daily Cases', '7-Day Rolling Average')
+names(type.labs) <- c('daily_cases', 'rolling_mean')
+
+state_facet <- ggplot(long_state_totals, aes(x = date, y = value, color = state)) +
+    geom_line() +
+    facet_grid(type~state,
+             scales = 'free_y',
+             labeller = labeller(type = type.labs)) +
+    labs(title = 'COVID-19 Daily Cases and 7-Day Rolling Averages',
+         x = 'Date', y = 'Cases') +
+    guides(color=F) +
+    theme_clean()
+state_facet
+```
+
+</center>
+
+```{r}
+# Doing data cleaning and adding the new per-capita case count and the 7 day average of 
+# the per capita case count 
+
+state_pops <- population_2019 %>% filter(Area_Name %in% c('New York', 'California', 'Louisiana', 'Florida') )
+
+state_cap_totals <- states_four %>% group_by(state, date) %>%
+  summarise(total_cases = sum(cases)) %>% 
+  mutate(daily_cases =  (total_cases - lag(total_cases, 
+                                           default=first(total_cases)))) %>%
+  inner_join(state_pops, by = c('state' = 'Area_Name')) %>% 
+  select(-c(State, fips)) %>%  
+  mutate(new_cases_per_capita = (daily_cases/pop_2019)) %>% 
+  group_by(state) %>% 
+  mutate(rolling_mean = rollmean(new_cases_per_capita, 7, na.pad=TRUE, align = 'right')) %>%
+  filter(daily_cases > 0)
+  
+```
+
+<center>
+```{r, warning = FALSE}
+percap_state_totals <- state_cap_totals %>% pivot_longer(cols = c('new_cases_per_capita', 'rolling_mean'), names_to = 'type')
+
+type.labs <- c('Daily', '7-Day Rolling Average')
+names(type.labs) <- c('new_cases_per_capita', 'rolling_mean')
+
+percap_state_facet <- ggplot(percap_state_totals, aes(x = date, y = value, color = state)) +
+    geom_line() +
+    facet_grid(type~state,
+             scales = 'free_y',
+             labeller = labeller(type = type.labs)) +
+    labs(title = 'COVID-19 per Capita Daily Count and 7-Day Average',
+         x = 'Date', y = 'Cases per Capita') +
+    guides(color=F) +
+    theme_clean() +
+    scale_color_brewer(palette = 'Set2')
+percap_state_facet
+```
+</center>
+
+As we can see from the per-capita graph, accounting for population makes California no longer look like the worst state, and Louisiana no longer appears to be the best state. The daily cases per capita is about half of what the cases per capita is in Louisiana, despite the daily cases being less than a quarter.
+
+# Question 3
+
+```{r, message=F, warning=F}
+
+
+
+##############============================== QUESTION 3 ==============================##############
+
+centroids <- read_csv("https://raw.githubusercontent.com/mikejohnson51/spds/master/docs/data/county-centroids.csv") 
+
+#Here I am going to impute the fips code for NYC because it is missing from the data, and NYC accounted for a large number of the cases so it is relevant to include. 
+covid$fips[which(covid$county == "New York City")] <- 36061
+```
+
+```{r}
+#covid_daily_raw <- covid %>% arrange(county, date) %>% group_by(county) %>% mutate(new_cases = c(first(cases), diff(cases))) %>% left_join(centroids, by = c('fips')) 
+covid_daily_raw <- covid %>% arrange(county, date) %>% group_by(county) %>% mutate(new_cases = c(first(cases), diff(cases))) %>% 
+  left_join(centroids, by = c('fips'))
+
+covid_daily_clean <- covid_daily_raw[!(is.na(covid_daily_raw$LON)),]
+
+
+#covid_daily_clean[(is.na(covid_daily_clean$LON)),]
+```
+
+```{r}
+covid_weighted <- covid_daily_clean %>% group_by(date) %>% summarise(weighted_lon = sum(LON*cases, na.rm = T)/sum(cases, na.rm = T), 
+                                                               weighted_lat = sum(LAT*cases, na.rm = T)/sum(cases, na.rm = T), 
+                                                               total_cases = sum(cases, na.rm = T),
+                                                               new_totals = sum(new_cases, na.rm = T)) %>% ungroup()
+covid_weighted$month <- factor(format(covid_weighted$date, '%b'), levels = month.abb)
+
+                                                               
+```
+
+<center>
+```{r}
+#Map Plot
+weighted_map <- ggplot(data = covid_weighted, aes(x=weighted_lon, y=weighted_lat)) + 
+  borders('state', fill = 'gray90', colour = 'white') +
+  geom_point(aes(colour = month, size = total_cases)) + 
+  labs(title = 'Weighted Mean Center of COVID-19 Cases in the USA', x = 'Longitude', y = 'Latitude', size = 'Total Cases', colour = 'Month') + 
+  theme_bw()
+  
+weighted_map
+```
+</center>
+
+# Code Appendix
+
+
+```{r, ref.label=knitr::all_labels(),echo=T,eval=FALSE}
+
+```
+
