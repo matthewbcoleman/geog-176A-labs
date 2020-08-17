@@ -227,6 +227,8 @@ weighted_map
 ```
 </center>
 
+As we can see, the weighted mean began in Washington, where the first recorded case of COVID-19 was found. As spreading continued, the weighted mean shifted towards the East coast, which could easily be explained by the spike in cases in New York. More recently, the shift to the center and down can be attributed to increases in California and the Bible Belt.
+
 # Code Appendix
 
 
