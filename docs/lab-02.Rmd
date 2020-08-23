@@ -4,7 +4,7 @@ author: '[Matthew Coleman](https://matthewbcoleman.github.io/)'
 subtitle: 'COVID-19 Pandemic'
 output: 
   html_document:
-    #theme: journal
+    theme: journal
 ---
 
 ```{r setup, include=FALSE}
