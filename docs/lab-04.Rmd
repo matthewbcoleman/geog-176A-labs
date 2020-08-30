@@ -1,0 +1,326 @@
+---
+title: "lab-04"
+author: "Matthew Coleman"
+date: "8/26/2020"
+output: 
+  html_document:
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = F, message = F)
+options(dplyr.summarise.inform=F) 
+```
+
+```{r, include=FALSE}
+library(sf)
+library(tidyverse)
+library(leaflet)
+library(leafpop)
+library(USAboundaries)
+library(rmapshaper)
+library(mapview)
+library(gridExtra)
+library(units)
+library(knitr)
+library(readxl)
+library(gghighlight)
+source('../R/utils.R')
+
+```
+
+# Data
+
+## Transforming the data to equal area
+
+```{r}
+counties <- us_counties() %>% st_transform(5070) %>% filter(!(state_name %in% c('Alaska', 'Puerto Rico', 'Hawaii')))
+```
+
+## Centroids
+
+```{r}
+cent_county <- st_centroid(counties)
+```
+
+```{r}
+cent_county <- cent_county %>% st_combine()
+```
+
+## Surface Collection
+
+```{r}
+
+# Voronoi
+
+voronoi <- cent_county %>% st_voronoi() %>% st_cast() %>% st_as_sf() %>% mutate(id = 1:n())
+
+# Triangulate
+
+triangulate <- cent_county %>% st_triangulate()  %>% st_cast() %>% st_as_sf() %>% mutate(id = 1:n())
+
+# Square Grid
+
+grid <- counties %>% st_make_grid(n = 70)  %>% st_cast() %>% st_as_sf() %>% mutate(id = 1:n())
+
+# Hexagonal Grid
+
+hex_grid <- counties %>% st_make_grid(square = FALSE, n = 70)  %>% st_cast() %>% st_as_sf() %>% mutate(id = 1:n())
+
+```
+
+## Cutting Borders
+
+```{r}
+
+border_raw <- counties %>% st_union()
+
+```
+
+## Simplify Borders
+
+```{r}
+
+border <- ms_simplify(border_raw, keep = .15)
+plot(border)
+
+#npts(border_raw)
+#npts(border)
+
+```
+
+The non-simplified border is `r npts(border_raw)` points, while the simplified border is `r npts(border)` points. One consequence of doing this computationally is you do not get to choose where or what is simplified. 
+
+
+
+
+
+```{r}
+# Voronoi
+
+voronoi <- st_intersection(voronoi, border)
+
+# Triangulate
+
+triangulate <- st_intersection(triangulate, border) 
+
+```
+
+```{r}
+
+plot_map <- function(sf_object, title ){
+  
+  ggplot() + 
+    geom_sf(data = sf_object, fill = 'white', col = 'navy', size = .2) +
+    theme_void() +
+    labs(title = paste0(title, ' Map'), 
+         caption = paste0('There are ', count(sf_object), ' features in the tesselation'))
+  
+  
+}
+
+counties_map <- plot_map(counties, 'Normal County')
+voronoi_plot <- plot_map(voronoi, 'Voronoi Tesselation')
+triang_plot <- plot_map(triangulate, 'Triangulation Tesselation')
+grid_plot <- plot_map(grid, 'Grid')
+hexgrid_plot <- plot_map(hex_grid, 'Hex Grid')
+
+```
+
+## Plotting
+
+
+```{r, fig.width= 10, fig.height= 7, fig.align='center' }
+grid.arrange(counties_map, voronoi_plot, triang_plot, grid_plot, hexgrid_plot, nrow = 3)
+```
+
+# Area Calculation
+
+```{r}
+
+tess_summary <- function(sf_object, tess){
+  area <- st_area(sf_object) %>% set_units('km^2') %>% drop_units()
+  num_feat <- length(area)
+  total_area <- sum(area)
+  avg_area <- mean(area)
+  std_area <- sd(area)
+  
+  summary<- data.frame(Tesselation=tess, 
+                       `# of Features` = num_feat, 
+                       `Mean Area (km^2)` = avg_area, 
+                       `Std. Deviation` = std_area,
+                       `Total Area` = total_area)
+  return(summary)
+}
+
+```
+
+```{r}
+
+summary_table <- rbind(
+  tess_summary(counties, 'Normal County'),
+  tess_summary(voronoi, 'Voronoi Tesselation'),
+  tess_summary(triangulate, 'Triangulation Tesselation'),
+  tess_summary(grid, 'Grid'),
+  tess_summary(hex_grid, 'Hex Grid')
+)
+
+kable(summary_table, col.names = c('Tesselation',  '# of Features', 'Mean Area (km^2)', 'Std. Deviation', 'Total Area (km^2)' ), 
+      caption = 'Tesselation Summary Table')
+
+```
+
+* Normal County: Largest standard deviation, 2nd smallest area.
+* Voronoi: Second largest standard deviation, very similar area and mean are as normal county geometry.
+* Triangulation: has the largest number of features but the smallest average area and area. May be difficult to do multiple computations with 2x as many features as the normal county geometry
+* Grid: Normal number of features, but 2nd largest area, may cause computations to be slow because of large number calculations.
+* Hex Grid: Very Similar to Grid; smallest number of features but highest average area and total area. 
+
+# Dams
+
+## Dam Data 
+
+```{r, message = F, warning = F}
+conus <- state.abb[!(state.abb %in% c('AK', 'HI', 'PR'))]
+dams_raw <- read_excel('../data/NID2019_U.xlsx') %>% filter(STATE %in% conus) %>% filter(LONGITUDE != 0 | LATITUDE != 0) 
+```
+
+```{r}
+dams <- dams_raw %>% filter(!is.na(LONGITUDE) & !is.na(LATITUDE)) %>% st_as_sf(coords = c('LONGITUDE','LATITUDE'), crs = 4326) %>% st_transform(5070)
+
+```
+
+
+## Points in Polygon
+
+```{r}
+point_in_polygon = function(points, polygon, id){
+  st_join(points, polygon) %>%
+    st_drop_geometry() %>%
+    count(.data[[id]]) %>%
+    setNames(c(id, "n")) %>%
+    left_join(polygon, by = id) %>%
+    st_as_sf()
+}
+
+plot_pip = function(data, title){
+  ggplot() +
+    geom_sf(data = data, aes(fill = n), alpha = .9, size = .2, col = NA) +
+    scale_fill_viridis_c() +
+    theme_void() +
+    theme(plot.title = element_text(face = "bold", color = "navy", hjust = .5, size = 24)) +
+    labs(title = title,
+         caption = paste0("Number of Dams: ", sum(data$n) ))
+}
+
+```
+
+```{r}
+dams_normal <- point_in_polygon(dams, counties, 'geoid') 
+dams_voronoi <- point_in_polygon(dams, voronoi, 'id') 
+dams_triang <- point_in_polygon(dams, triangulate, 'id') 
+dams_grid <- point_in_polygon(dams, grid, 'id') 
+dams_hex <- point_in_polygon(dams, hex_grid, 'id') 
+
+```
+
+
+## Plots
+
+```{r}
+county_dam_map <- plot_pip(dams_normal, 'Dams per County')
+voronoi_dam_map <- plot_pip(dams_voronoi, 'Dams per Voronoi Tile')
+triang_dam_map <- plot_pip(dams_triang, 'Dams per Triangle Tile')
+grid_dam_map <- plot_pip(dams_grid, 'Dams per Grid')
+hex_dam_map <- plot_pip(dams_hex, 'Dams per Hex-Grid')
+
+```
+
+```{r, fig.width= 10, fig.height= 7, fig.align='center' }
+grid.arrange(county_dam_map, voronoi_dam_map, triang_dam_map, grid_dam_map, hex_dam_map, nrow = 3)
+
+```
+
+Different tessellations seemed to either increase or decrease the density of dams. For example, the Voronoi plot seemed to put more density on some northwestern counties, where the triangulated and hex grid do not have as much density in the same locations as comparison. This is related to the MAUP because as the size and coverage of each tessellation changes, they may generalize parts of the data, resulting in bias. I will choose the hex grid because it has the smallest # of features and generalizes the data the least.
+
+# Dam Purposes
+
+## Dam Types
+
+I am choosing Flood Control, Fire Protection, Water Supply, and Irrigation dams because I feel these are some of the highest prority dams in terms of their uses.
+
+```{r}
+flood_dams <- dams %>% filter(grepl('C', PURPOSES))
+fire_dams <- dams %>% filter(grepl('P', PURPOSES))
+supply_dams <- dams %>% filter(grepl('S', PURPOSES))
+irri_dams <- dams %>% filter(grepl('I', PURPOSES))
+
+```
+
+```{r}
+pip_flood <- point_in_polygon(flood_dams, hex_grid, 'id')
+pip_fire <- point_in_polygon(fire_dams, hex_grid, 'id')
+pip_supply <- point_in_polygon(supply_dams, hex_grid, 'id')
+pip_irri <- point_in_polygon(irri_dams, hex_grid, 'id')
+
+```
+
+```{r}
+flood_map <- plot_pip(pip_flood, 'Flood Control Dams') + gghighlight(n > (mean(n) + sd(n)))
+fire_map <- plot_pip(pip_fire, 'Fire Protection Dams') + gghighlight(n > (mean(n) + sd(n)))
+supply_map <- plot_pip(pip_supply, 'Water Supply Dams') + gghighlight(n > (mean(n) + sd(n)))
+irri_map <- plot_pip(pip_irri, 'Irrigation Dams') + gghighlight(n > (mean(n) + sd(n)))
+
+```
+
+```{r, fig.width= 10, fig.height= 7, fig.align='center' }
+grid.arrange(flood_map, fire_map, supply_map, irri_map, nrow= 2)
+
+```
+
+As we can see, the flood control dams seem to be focused along the Mississippi river, which comes to no surprise. The fire protection da,s also seem to be in the same location, but more focused. The water supply dams are in the north-central location of the US. and the irrigation dams are located in two hot spots, central USA and the East Coast.
+
+# High Hazard Dams
+
+```{r}
+rivers <- read_sf('../data/majorrivers_0_0/MajorRivers.shp')
+miss <- rivers %>% filter(SYSTEM == 'Mississippi')
+
+```
+
+```{r}
+top_dams <- dams %>% filter(HAZARD == 'H') %>% group_by(STATE) %>% slice(which.max(NID_STORAGE)) %>% ungroup() %>%
+  st_transform(4326)
+
+```
+
+## Mississippi River System and Largest Storage, High-risk Dam by State
+
+```{r, fig.width= 10, fig.height= 7, fig.align='center' }
+leaflet() %>%
+  addProviderTiles(providers$OpenStreetMap) %>%
+  addCircleMarkers(data = top_dams, color = NA, 
+                   fillColor = 'red', 
+                   radius = top_dams$NID_STORAGE/1500000,
+                   popup = popupTable({top_dams %>% st_drop_geometry() %>% 
+                       select(State = STATE,
+                              `Dam Name` = DAM_NAME,
+                              Storage = NID_STORAGE,
+                              Purposes = PURPOSES,
+                              `Year Completed` = YEAR_COMPLETED)},
+                       feature.id = F, row.numbers = F)) %>%
+  addPolylines(data = miss)
+
+
+```
+
+
+# Code Appendix
+
+```{r, ref.label=knitr::all_labels(),echo=T,eval=FALSE}
+
+```
+
+
+
+
