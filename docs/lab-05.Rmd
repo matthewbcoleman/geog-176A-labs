@@ -1,0 +1,280 @@
+---
+title: "lab-05"
+author: "Matthew Coleman"
+date: "9/2/2020"
+output: 
+  html_document:
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(raster)
+library(getlandsat)
+library(mapview)
+library(osmdata)
+library(knitr)
+```
+
+# Area of Interest
+
+```{r}
+bb = read_csv('../data/uscities.csv') %>%
+  filter(city == 'Palo') %>%
+  st_as_sf(coords = c('lng','lat'), crs = 4326) %>%
+  st_transform(5070) %>%
+  st_buffer(5000) %>%
+  st_bbox() %>%
+  st_as_sfc()
+```
+
+# Landsat Tiles
+
+```{r}
+meta = read_csv('../data/palo-flood.csv')
+
+files = lsat_scene_files(meta$download_url) %>%
+  filter(grepl(paste0('B',1:6,'.TIF$', collapse = '|'), file)) %>%
+  arrange(file) %>% 
+  pull(file)
+
+st = sapply(files, lsat_image) 
+
+b = stack(st) %>% setNames(paste0('band', 1:6))
+```
+
+The dimensions of the stacked image are 7,811 rows, 7,861 columns, 59,996,291 cells and 6 layers. The CRS is UTM on the WGS84 datum. The resolution is 30m x 30m. 
+
+```{r}
+cropper = bb %>% st_as_sf() %>% st_transform(crs(b))
+
+cr_b = crop(b, cropper)
+
+r <- cr_b %>% setNames(c('coastal', 'blue', 'green', 'red', 'nir', 'swir'))
+
+```
+
+The dimensions of the stacked image are 340 rows, 346 columns, 117,640 cells and 6 layers. The CRS is UTM on the WGS84 datum. The resolution is 30m x 30m.
+
+# Plots
+
+## Non-Contrasted
+
+### Natural Color
+
+```{r}
+plotRGB(r, r = 4, g= 3, b = 2)
+```
+
+### Color Infared
+
+```{r}
+plotRGB(r, r = 5, g= 4, b = 2)
+```
+
+### False Color Water Focus
+```{r}
+plotRGB(r, r = 5, g= 6, b = 4)
+```
+
+### Land From Water Focus
+```{r}
+plotRGB(r, r = 7, g= 5, b = 3)
+```
+
+## Contrasted
+
+### Natural Color
+```{r}
+plotRGB(r, r = 4, g= 3, b = 2, stretch = 'hist')
+```
+
+### Color Infared
+
+```{r}
+plotRGB(r, r = 5, g= 4, b = 2, stretch = 'hist')
+```
+
+### False Color Water Focus
+```{r}
+plotRGB(r, r = 5, g= 6, b = 4, stretch = 'lin')
+```
+
+### Land From Water Focus
+```{r}
+plotRGB(r, r = 7, g= 5, b = 3, stretch = 'lin')
+```
+
+# Flooding
+
+## Raster Algebra
+
+```{r}
+ndvi = (r$nir - r$red)/(r$nir + r$red)
+
+ndwi = (r$green - r$nir)/(r$green + r$nir)
+
+mndwi = (r$green - r$swir)/(r$green + r$swir)
+
+wri = (r$green + r$red)/(r$nir + r$swir)
+
+swi = 1/(sqrt(r$blue-r$swir))
+
+rs <- stack(ndvi, ndwi, mndwi, wri, swi) %>% setNames(c('NDVI', 'NDWI', 'MNDWI', 'WRI', 'SWI'))
+
+plot(rs, col = colorRampPalette(c("blue", "white", "red"))(256))
+
+```
+
+A we can see, the NWDI, MNDWI, and WRI are all very similar in the way they pick up water cells with the same color, but they deviate differently in the dry ground cells. NDVI picks up water in a different color, and land in the opposite as well. The SWI seems to pick up only water cells and no land cells.
+
+## Thresholding
+
+```{r}
+ndvi_t = function(x) {ifelse(x<=0,1,0)}
+ndwi_t = function(x) {ifelse(x>=0,1,0)}
+mndwi_t = function(x) {ifelse(x>=0,1,0)}
+wri_t = function(x) {ifelse(x>=1,1,0)}
+swi_t = function(x) {ifelse(x<=5,1,0)}
+
+
+ndvi_f = calc(ndvi, ndvi_t)
+ndwi_f = calc(ndwi, ndwi_t)
+mndwi_f = calc(mndwi, mndwi_t)
+wri_f = calc(wri, wri_t)
+swi_f = calc(swi, swi_t)
+
+f_stack = stack(c(ndvi_f, ndwi_f, mndwi_f, wri_f, swi_f)) %>% setNames(c('NDVI', 'NDWI', 'MNDWI', 'WRI', 'SWI'))
+```
+
+```{r}
+plot(f_stack, col = colorRampPalette(c("white","blue"))(256))
+```
+
+```{r}
+#sum(is.na(values(ndvi_f)))
+#sum(is.na(values(ndwi_f)))
+#sum(is.na(values(mndwi_f)))
+#sum(is.na(values(wri_f)))
+#sum(is.na(values(swi_f)))
+```
+
+SWI has multiple NA values so we will have to replace those.
+
+```{r}
+values(swi_f) <- ifelse(is.na(values(swi_f)), 0, values(swi_f) )
+
+#sum(is.na(values(swi_f)))
+```
+
+# Clustering
+
+```{r}
+vals <- getValues(r)
+
+#dim(vals)
+```
+
+This shoes us they are extracted as a matrix of size `r dim(vals)[1]` x `r dim(vals)[2]`
+
+```{r}
+vals <- na.omit(vals)
+vs <- scale(vals)
+idx <- 1:dim(vals)[1]
+```
+
+```{r}
+set.seed(20200905)
+
+rast.clust <- kmeans(vs, 6, iter.max = 100)
+
+kmeans_raster <- rs$MNDWI
+values(kmeans_raster) <- rast.clust$cluster
+
+plot(kmeans_raster)
+```
+
+```{r, echo = F}
+table(getValues(swi_f), getValues(kmeans_raster))
+```
+
+```{r}
+k_thresh = function(x) {ifelse(x==1,1,0)}
+
+k_flood = calc(kmeans_raster, k_thresh) %>% setNames('K-Means')
+
+f_stack <- addLayer(f_stack, k_flood)
+```
+
+```{r}
+plot(f_stack, col = colorRampPalette(c("white","blue"))(256))
+```
+
+
+# Flooding Stats
+
+```{r}
+flood_area <- cellStats(f_stack, 'sum') * (30^2)
+flood_area_km <- flood_area*0.000001
+
+#names(flood_area)
+
+kable(data.frame(flood_area), col.names = 'Flood Area m^2', caption = 'Flood Area for Different Methods')
+```
+
+```{r}
+rast_uncert <- calc(f_stack, function(x){sum(x)}) %>% setNames('Flood Uncertainty')
+```
+
+## Flood Uncertainty
+
+### Base R
+
+```{r}
+plot(rast_uncert, col = blues9, main = 'Flood Uncertainty')
+```
+
+```{r}
+values(rast_uncert) <- ifelse(values(rast_uncert)==0, NA, values(rast_uncert))
+```
+
+### Open Steet Map
+
+```{r}
+mapview(rast_uncert)
+```
+
+Some of the values in the raster are not even because there may be 1, 3, or 5 raster layers which picked up areas of the map as being flooded, which would result in the sum of layers not being even. 
+
+# Appendix
+
+```{r ref.label= knitr::all_labels(), echo = TRUE, eval = FALSE}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
