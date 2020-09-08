@@ -249,7 +249,7 @@ values(rast_uncert) <- ifelse(values(rast_uncert)==0, NA, values(rast_uncert))
 mapview(rast_uncert)
 ```
 
-Some of the values in the raster are not whole numbers because the color palette is continuous, so to make the overall raster, which is discrete, fit this color scheme, it is possible it combines values nearby and makes a raster value a non-whole number, which results in the color smoothing of the map.
+Some of the values in the raster are not whole numbers because the numbers are changed to a geographic coordinate system, which resulted in the values of the raster being changed. 
 
 # Appendix
 
